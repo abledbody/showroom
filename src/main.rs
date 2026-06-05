@@ -6,13 +6,25 @@ use ratatui::Terminal;
 use shadow_terminal::{
 	active_terminal::ActiveTerminal,
 	output::native::{CompleteSurface, Output as TerminalOutput, SurfaceDiff},
-	termwiz::{self, color::ColorAttribute, input::{KeyCodeEncodeModes, KeyboardEncoding}, surface::Surface},
+	termwiz::{
+		self,
+		color::ColorAttribute,
+		input::{KeyCodeEncodeModes, KeyboardEncoding},
+		surface::Surface,
+	},
 	wezterm_term::KeyCode,
 };
 use soft_ratatui::{EmbeddedGraphics, SoftBackend, embedded_graphics_unicodefonts};
 
 const DEFAULT_WIDTH: u16 = 80;
 const DEFAULT_HEIGHT: u16 = 32;
+
+const DEFAULT_KEY_CODE_ENCODE_MODE: KeyCodeEncodeModes = KeyCodeEncodeModes {
+	encoding: KeyboardEncoding::Xterm,
+	application_cursor_keys: false,
+	newline_mode: false,
+	modify_other_keys: None,
+};
 
 struct State {
 	ratagui_terminal: Terminal<RataguiBackend<EmbeddedGraphics>>,
@@ -54,35 +66,33 @@ impl State {
 	}
 
 	fn apply_egui_event(&mut self, e: eframe::egui::Event) -> Result<(), Box<dyn Error>> {
-		match e {
-			eframe::egui::Event::Text(text) => {
-				for slice in text.as_bytes().chunks(128) {
-					let mut bytes = [0u8; 128];
-					bytes[..slice.len()].copy_from_slice(slice);
-					self.active_terminal.pty_input_tx.try_send(bytes)?
-				}
-			}
+		let string = match e {
+			eframe::egui::Event::Text(text) => text,
 			eframe::egui::Event::Key {
 				key,
 				physical_key: _,
 				pressed,
 				repeat: _,
 				modifiers,
-			} => {
-				if let Some(keycode) = egui_key_to_termwiz_keycode(key) {
-					keycode.encode(
-						egui_mod_to_termwiz(modifiers),
-						KeyCodeEncodeModes {
-							encoding: KeyboardEncoding::Xterm,
-							application_cursor_keys: false,
-							newline_mode: false,
-							modify_other_keys: None,
-						},
-						pressed,
-					)?;
-				}
-			}
-			_ => {}
+			} => match egui_key_to_termwiz_keycode(key) {
+				Some(keycode) => keycode.encode(
+					egui_mod_to_termwiz(modifiers),
+					DEFAULT_KEY_CODE_ENCODE_MODE,
+					pressed,
+				)?,
+				None => "".to_string(),
+			},
+			_ => "".to_string(),
+		};
+
+		if string.len() == 0 {
+			return Ok(());
+		}
+
+		for slice in string.as_bytes().chunks(128) {
+			let mut bytes = [0u8; 128];
+			bytes[..slice.len()].copy_from_slice(slice);
+			self.active_terminal.pty_input_tx.try_send(bytes)?
 		}
 
 		Ok(())
@@ -90,60 +100,61 @@ impl State {
 }
 
 fn egui_key_to_termwiz_keycode(key: eframe::egui::Key) -> Option<KeyCode> {
+	use eframe::egui::Key;
 	match key {
-		eframe::egui::Key::ArrowDown => Some(KeyCode::DownArrow),
-		eframe::egui::Key::ArrowLeft => Some(KeyCode::LeftArrow),
-		eframe::egui::Key::ArrowRight => Some(KeyCode::RightArrow),
-		eframe::egui::Key::ArrowUp => Some(KeyCode::UpArrow),
-		eframe::egui::Key::Escape => Some(KeyCode::Escape),
-		eframe::egui::Key::Tab => Some(KeyCode::Tab),
-		eframe::egui::Key::Backspace => Some(KeyCode::Backspace),
-		eframe::egui::Key::Enter => Some(KeyCode::Enter),
-		eframe::egui::Key::Insert => Some(KeyCode::Insert),
-		eframe::egui::Key::Delete => Some(KeyCode::Delete),
-		eframe::egui::Key::Home => Some(KeyCode::Home),
-		eframe::egui::Key::End => Some(KeyCode::End),
-		eframe::egui::Key::PageUp => Some(KeyCode::PageUp),
-		eframe::egui::Key::PageDown => Some(KeyCode::PageDown),
-		eframe::egui::Key::Copy => Some(KeyCode::Copy),
-		eframe::egui::Key::Cut => Some(KeyCode::Cut),
-		eframe::egui::Key::Paste => Some(KeyCode::Paste),
-		eframe::egui::Key::F1 => Some(KeyCode::Function(1)),
-		eframe::egui::Key::F2 => Some(KeyCode::Function(2)),
-		eframe::egui::Key::F3 => Some(KeyCode::Function(3)),
-		eframe::egui::Key::F4 => Some(KeyCode::Function(4)),
-		eframe::egui::Key::F5 => Some(KeyCode::Function(5)),
-		eframe::egui::Key::F6 => Some(KeyCode::Function(6)),
-		eframe::egui::Key::F7 => Some(KeyCode::Function(7)),
-		eframe::egui::Key::F8 => Some(KeyCode::Function(8)),
-		eframe::egui::Key::F9 => Some(KeyCode::Function(9)),
-		eframe::egui::Key::F10 => Some(KeyCode::Function(10)),
-		eframe::egui::Key::F11 => Some(KeyCode::Function(11)),
-		eframe::egui::Key::F12 => Some(KeyCode::Function(12)),
-		eframe::egui::Key::F13 => Some(KeyCode::Function(13)),
-		eframe::egui::Key::F14 => Some(KeyCode::Function(14)),
-		eframe::egui::Key::F15 => Some(KeyCode::Function(15)),
-		eframe::egui::Key::F16 => Some(KeyCode::Function(16)),
-		eframe::egui::Key::F17 => Some(KeyCode::Function(17)),
-		eframe::egui::Key::F18 => Some(KeyCode::Function(18)),
-		eframe::egui::Key::F19 => Some(KeyCode::Function(19)),
-		eframe::egui::Key::F20 => Some(KeyCode::Function(20)),
-		eframe::egui::Key::F21 => Some(KeyCode::Function(21)),
-		eframe::egui::Key::F22 => Some(KeyCode::Function(22)),
-		eframe::egui::Key::F23 => Some(KeyCode::Function(23)),
-		eframe::egui::Key::F24 => Some(KeyCode::Function(24)),
-		eframe::egui::Key::F25 => Some(KeyCode::Function(25)),
-		eframe::egui::Key::F26 => Some(KeyCode::Function(26)),
-		eframe::egui::Key::F27 => Some(KeyCode::Function(27)),
-		eframe::egui::Key::F28 => Some(KeyCode::Function(28)),
-		eframe::egui::Key::F29 => Some(KeyCode::Function(29)),
-		eframe::egui::Key::F30 => Some(KeyCode::Function(30)),
-		eframe::egui::Key::F31 => Some(KeyCode::Function(31)),
-		eframe::egui::Key::F32 => Some(KeyCode::Function(32)),
-		eframe::egui::Key::F33 => Some(KeyCode::Function(33)),
-		eframe::egui::Key::F34 => Some(KeyCode::Function(34)),
-		eframe::egui::Key::F35 => Some(KeyCode::Function(35)),
-		eframe::egui::Key::BrowserBack => Some(KeyCode::BrowserBack),
+		Key::ArrowDown => Some(KeyCode::DownArrow),
+		Key::ArrowLeft => Some(KeyCode::LeftArrow),
+		Key::ArrowRight => Some(KeyCode::RightArrow),
+		Key::ArrowUp => Some(KeyCode::UpArrow),
+		Key::Escape => Some(KeyCode::Escape),
+		Key::Tab => Some(KeyCode::Tab),
+		Key::Backspace => Some(KeyCode::Backspace),
+		Key::Enter => Some(KeyCode::Enter),
+		Key::Insert => Some(KeyCode::Insert),
+		Key::Delete => Some(KeyCode::Delete),
+		Key::Home => Some(KeyCode::Home),
+		Key::End => Some(KeyCode::End),
+		Key::PageUp => Some(KeyCode::PageUp),
+		Key::PageDown => Some(KeyCode::PageDown),
+		Key::Copy => Some(KeyCode::Copy),
+		Key::Cut => Some(KeyCode::Cut),
+		Key::Paste => Some(KeyCode::Paste),
+		Key::F1 => Some(KeyCode::Function(1)),
+		Key::F2 => Some(KeyCode::Function(2)),
+		Key::F3 => Some(KeyCode::Function(3)),
+		Key::F4 => Some(KeyCode::Function(4)),
+		Key::F5 => Some(KeyCode::Function(5)),
+		Key::F6 => Some(KeyCode::Function(6)),
+		Key::F7 => Some(KeyCode::Function(7)),
+		Key::F8 => Some(KeyCode::Function(8)),
+		Key::F9 => Some(KeyCode::Function(9)),
+		Key::F10 => Some(KeyCode::Function(10)),
+		Key::F11 => Some(KeyCode::Function(11)),
+		Key::F12 => Some(KeyCode::Function(12)),
+		Key::F13 => Some(KeyCode::Function(13)),
+		Key::F14 => Some(KeyCode::Function(14)),
+		Key::F15 => Some(KeyCode::Function(15)),
+		Key::F16 => Some(KeyCode::Function(16)),
+		Key::F17 => Some(KeyCode::Function(17)),
+		Key::F18 => Some(KeyCode::Function(18)),
+		Key::F19 => Some(KeyCode::Function(19)),
+		Key::F20 => Some(KeyCode::Function(20)),
+		Key::F21 => Some(KeyCode::Function(21)),
+		Key::F22 => Some(KeyCode::Function(22)),
+		Key::F23 => Some(KeyCode::Function(23)),
+		Key::F24 => Some(KeyCode::Function(24)),
+		Key::F25 => Some(KeyCode::Function(25)),
+		Key::F26 => Some(KeyCode::Function(26)),
+		Key::F27 => Some(KeyCode::Function(27)),
+		Key::F28 => Some(KeyCode::Function(28)),
+		Key::F29 => Some(KeyCode::Function(29)),
+		Key::F30 => Some(KeyCode::Function(30)),
+		Key::F31 => Some(KeyCode::Function(31)),
+		Key::F32 => Some(KeyCode::Function(32)),
+		Key::F33 => Some(KeyCode::Function(33)),
+		Key::F34 => Some(KeyCode::Function(34)),
+		Key::F35 => Some(KeyCode::Function(35)),
+		Key::BrowserBack => Some(KeyCode::BrowserBack),
 		_ => None,
 	}
 }
