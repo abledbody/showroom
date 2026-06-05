@@ -4,4 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+eframe = "0.34.3"
+ratatui = "0.30.0"
+soft_ratatui = {version = "0.2.0", features = ["unicodefonts"]}
 egui_ratatui = "2.2.0"
