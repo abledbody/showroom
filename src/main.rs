@@ -1,18 +1,29 @@
-use std::error::Error;
-
-use eframe::{App, CreationContext};
-use egui_ratatui::RataguiBackend;
-use ratatui::Terminal;
-use shadow_terminal::{
-	active_terminal::ActiveTerminal, output::native::{CompleteSurface, Output as TerminalOutput, SurfaceDiff}, shadow_terminal::Config as ShadowTermConfig, termwiz::{
-		input::{KeyCodeEncodeModes, KeyboardEncoding},
-		surface::Surface,
+use std::{
+	borrow::Cow, default::Default, error::Error, sync::{
+		Arc,
+		mpsc::Receiver,
 	}
 };
+
+use alacritty_terminal::{
+	Term,
+	event::{Event as AlacrittyEvent, EventListener, WindowSize},
+	event_loop::{EventLoop, EventLoopSender, Msg as AlacrittyMsg},
+	grid::Dimensions,
+	sync::FairMutex,
+	term::Config as AlacrittyConfig,
+	tty::{self, Options, Shell},
+	vte::ansi::Rgb as AlacrittyColor,
+};
+use eframe::{App, CreationContext, egui::Event as EguiEvent};
+use egui_ratatui::RataguiBackend;
+use ratatui::Terminal;
 use soft_ratatui::{EmbeddedGraphics, SoftBackend, embedded_graphics_unicodefonts};
+use termwiz::input::{KeyCodeEncodeModes, KeyboardEncoding};
 
 mod translation;
 
+const DEFAULT_TOTAL_LINES: usize = 4000;
 const DEFAULT_WIDTH: u16 = 80;
 const DEFAULT_HEIGHT: u16 = 32;
 
@@ -25,53 +36,54 @@ const DEFAULT_KEY_CODE_ENCODE_MODE: KeyCodeEncodeModes = KeyCodeEncodeModes {
 
 struct State {
 	ratagui_terminal: Terminal<RataguiBackend<EmbeddedGraphics>>,
-	active_terminal: ActiveTerminal,
-	surface: Surface,
+	active_terminal: Arc<FairMutex<Term<EventProxy>>>,
+	event_rx: Receiver<AlacrittyEvent>,
+	event_tx: EventLoopSender,
 }
 
 impl State {
 	fn new(
 		_creation_context: &CreationContext,
 		ratagui_terminal: Terminal<RataguiBackend<EmbeddedGraphics>>,
-		active_terminal: ActiveTerminal,
+		active_terminal: Arc<FairMutex<Term<EventProxy>>>,
+		event_rx: Receiver<AlacrittyEvent>,
+		event_tx: EventLoopSender,
 	) -> Self {
 		State {
 			ratagui_terminal,
 			active_terminal,
-			surface: Surface::new(DEFAULT_WIDTH as usize, DEFAULT_HEIGHT as usize),
+			event_rx,
+			event_tx,
 		}
 	}
 
-	fn sync_surface(&mut self, output: TerminalOutput) {
-		match output {
-			TerminalOutput::Diff(diff) => {
-				self.surface.add_changes(match diff {
-					SurfaceDiff::Scrollback(scrollback_diff) => scrollback_diff.changes,
-					SurfaceDiff::Screen(screen_diff) => screen_diff.changes,
-					_ => todo!(),
+	fn apply_alacritty_event(&mut self, ctx: &eframe::egui::Context, event: AlacrittyEvent) -> Result<(), Box<dyn std::error::Error>> {
+		Ok(match event {
+			AlacrittyEvent::ColorRequest(index, fmt) => {
+				let color = self.active_terminal.lock().colors()[index].unwrap_or(AlacrittyColor {
+					r: 0,
+					g: 0,
+					b: 0,
 				});
+				self.event_tx.send(AlacrittyMsg::Input(fmt(color).into_bytes().into()))?;
 			}
-			TerminalOutput::Complete(complete) => {
-				self.surface = match complete {
-					CompleteSurface::Scrollback(complete_scrollback) => complete_scrollback.surface,
-					CompleteSurface::Screen(complete_screen) => complete_screen.surface,
-					_ => todo!(),
-				};
-			}
-			_ => todo!(),
-		}
+			AlacrittyEvent::Wakeup => {
+				ctx.request_repaint()
+			},
+			_ => {}
+		})
 	}
 
-	fn apply_egui_event(&mut self, e: eframe::egui::Event) -> Result<(), Box<dyn Error>> {
+	fn apply_egui_event(&mut self, e: EguiEvent) -> Result<(), Box<dyn Error>> {
 		let string = match e {
-			eframe::egui::Event::Text(text) => text,
-			eframe::egui::Event::Key {
+			EguiEvent::Text(text) => text,
+			EguiEvent::Key {
 				key,
 				physical_key: _,
 				pressed,
 				repeat: _,
 				modifiers,
-			} => match translation::egui_key_to_termwiz_keycode(key) {
+			} => match translation::egui_key_to_code(key) {
 				Some(keycode) => keycode.encode(
 					translation::egui_mod_to_termwiz(modifiers),
 					DEFAULT_KEY_CODE_ENCODE_MODE,
@@ -86,11 +98,7 @@ impl State {
 			return Ok(());
 		}
 
-		for slice in string.as_bytes().chunks(128) {
-			let mut bytes = [0u8; 128];
-			bytes[..slice.len()].copy_from_slice(slice);
-			self.active_terminal.pty_input_tx.try_send(bytes)?
-		}
+		self.event_tx.send(AlacrittyMsg::Input(Cow::Owned(string.into_bytes())))?;
 
 		Ok(())
 	}
@@ -100,7 +108,7 @@ impl App for State {
 	fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
 		match self
 			.ratagui_terminal
-			.draw(|f| translation::transfer_surface(&mut self.surface, f.buffer_mut()))
+			.draw(|f| translation::transfer_surface(&self.active_terminal, f.buffer_mut()))
 		{
 			Err(_) => eprintln!("Failed to draw terminal."),
 			_ => {}
@@ -110,15 +118,10 @@ impl App for State {
 	}
 
 	fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
-		let mut redraw = false;
-
-		while let Ok(output) = self.active_terminal.surface_output_rx.try_recv() {
-			self.sync_surface(output);
-			redraw = true;
-		}
-
-		if redraw {
-			ctx.request_repaint();
+		while let Ok(event) = self.event_rx.try_recv() {
+			if let Err(e) = self.apply_alacritty_event(&ctx, event) {
+				eprintln!("{}", e);
+			}
 		}
 
 		let events = ctx.input(|i| i.events.clone());
@@ -128,6 +131,35 @@ impl App for State {
 				eprintln!("{}", err);
 			}
 		}
+	}
+}
+
+#[derive(Clone)]
+struct EventProxy(std::sync::mpsc::Sender<AlacrittyEvent>);
+
+impl EventListener for EventProxy {
+	fn send_event(&self, event: AlacrittyEvent) {
+		let _ = self.0.send(event);
+	}
+}
+
+struct Size {
+	total_lines: usize,
+	screen_lines: usize,
+	columns: usize,
+}
+
+impl Dimensions for Size {
+	fn total_lines(&self) -> usize {
+		self.total_lines
+	}
+
+	fn screen_lines(&self) -> usize {
+		self.screen_lines
+	}
+
+	fn columns(&self) -> usize {
+		self.columns
 	}
 }
 
@@ -142,24 +174,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let backend = RataguiBackend::new("Showroom", soft_backend);
 
-
-	let rt = tokio::runtime::Runtime::new().unwrap();
-	let active_terminal = rt.block_on(async {
-		let shell = std::env::var_os("SHELL").unwrap_or_else(|| "bash".into());
-		ActiveTerminal::start(ShadowTermConfig {
-			command: vec![shell],
-			width: DEFAULT_WIDTH,
-			height: DEFAULT_HEIGHT,
-			..Default::default()
-		})
-	});
+	let config = AlacrittyConfig::default();
+	let (event_tx, event_rx) = std::sync::mpsc::channel();
+	let event_proxy = EventProxy(event_tx);
+	let size = Size {
+		total_lines: DEFAULT_TOTAL_LINES,
+		screen_lines: DEFAULT_HEIGHT as usize,
+		columns: DEFAULT_WIDTH as usize,
+	};
+	let active_terminal = Arc::new(FairMutex::new(Term::new(config, &size, event_proxy.clone())));
 
 	let ratagui_terminal = Terminal::new(backend)?;
+
+	let shell_path = match std::env::var_os("SHELL") {
+		Some(shell_path) => match shell_path.into_string() {
+			Ok(shell_path) => shell_path,
+			Err(_) => "bash".into(),
+		},
+		None => "bash".into(),
+	};
+
+	tty::setup_env();
+	let pty = tty::new(
+		&Options {
+			shell: Some(Shell::new(shell_path, vec![])),
+			..Default::default()
+		},
+		WindowSize {
+			num_lines: DEFAULT_HEIGHT,
+			num_cols: DEFAULT_WIDTH,
+			cell_width: 8,
+			cell_height: 13,
+		},
+		0,
+	)?;
+
+	let event_loop = EventLoop::new(active_terminal.clone(), event_proxy, pty, false, false)?;
+	let loop_tx = event_loop.channel();
+	event_loop.spawn();
 
 	eframe::run_native(
 		"Showroom",
 		eframe::NativeOptions::default(),
-		Box::new(|cc| Ok(Box::new(State::new(cc, ratagui_terminal, active_terminal)))),
+		Box::new(|cc| {
+			Ok(Box::new(State::new(
+				cc,
+				ratagui_terminal,
+				active_terminal,
+				event_rx,
+				loop_tx,
+			)))
+		}),
 	)?;
 
 	Ok(())

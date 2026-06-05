@@ -1,94 +1,103 @@
+use std::sync::Arc;
+
 use eframe::egui;
-use shadow_terminal::{termwiz::{self, color::ColorAttribute, surface::Surface}, wezterm_term::KeyCode};
+use alacritty_terminal::{Term, sync::FairMutex, term::color::Colors, vte::ansi::Rgb};
+use termwiz::input::KeyCode;
 
-pub(crate) fn transfer_surface(surface: &mut Surface, buf: &mut ratatui::buffer::Buffer) {
-	for (y, line) in surface.screen_lines().iter().enumerate() {
-		for cell in line.visible_cells() {
-			let (x, y) = (cell.cell_index() as u16, y as u16);
+use crate::EventProxy;
 
-			let attrs = cell.attrs();
-			let style = ratatui::style::Style::new()
-				.fg(termwiz_color_to_ratatui(attrs.foreground()))
-				.bg(termwiz_color_to_ratatui(attrs.background()));
+pub(crate) fn transfer_surface(term: &Arc<FairMutex<Term<EventProxy>>>, buf: &mut ratatui::buffer::Buffer) {
+	let term = term.lock();
+	let content = term.renderable_content();
+	let colors = content.colors;
+	for cell in content.display_iter {
+		let style = ratatui::style::Style::new()
+			.fg(alacritty_color_to_ratatui(cell.fg, &colors))
+			.bg(alacritty_color_to_ratatui(cell.bg, &colors));
 
-			if x < buf.area.width && y < buf.area.height {
-				buf[(x, y)].set_symbol(cell.str()).set_style(style);
-			}
+		let (x, y) = (cell.point.column.0 as u16, (cell.point.line.0 + content.display_offset as i32) as u16);
+		if x < buf.area.width && y < buf.area.height {
+			buf[(x, y)].set_char(cell.c).set_style(style);
 		}
 	}
 }
 
-pub(crate) fn termwiz_color_to_ratatui(c: ColorAttribute) -> ratatui::style::Color {
-	use ratatui::style::Color;
-	use termwiz::color::ColorAttribute::*;
+pub(crate) fn alacritty_color_to_ratatui(c: alacritty_terminal::vte::ansi::Color, colors: &Colors) -> ratatui::style::Color {
+	use ratatui::style::Color as RatatuiColor;
+	use alacritty_terminal::vte::ansi::Color::*;
+
 	match c {
-		Default => Color::Reset,
-		PaletteIndex(i) => Color::Indexed(i),
-		TrueColorWithDefaultFallback(s) | TrueColorWithPaletteFallback(s, _) => {
-			let (r, g, b, _) = s.as_rgba_u8();
-			Color::Rgb(r, g, b)
-		}
+		Named(named_color) => {
+			let rgb = colors[named_color as usize].unwrap_or(Rgb {r: 0, g: 0, b: 0});
+			RatatuiColor::Rgb(rgb.r, rgb.g, rgb.b)
+		},
+		Spec(rgb) => RatatuiColor::Rgb(rgb.r, rgb.g, rgb.b),
+		Indexed(index) => RatatuiColor::Indexed(index),
 	}
 }
 
-pub(crate) fn egui_key_to_termwiz_keycode(key: eframe::egui::Key) -> Option<KeyCode> {
+pub(crate) fn egui_key_to_code(key: eframe::egui::Key) -> Option<KeyCode> {
 	use eframe::egui::Key;
 
 	match key {
-		Key::ArrowDown =>   Some(KeyCode::DownArrow),
-		Key::ArrowLeft =>   Some(KeyCode::LeftArrow),
-		Key::ArrowRight =>  Some(KeyCode::RightArrow),
-		Key::ArrowUp =>     Some(KeyCode::UpArrow),
-		Key::Escape =>      Some(KeyCode::Escape),
-		Key::Tab =>         Some(KeyCode::Tab),
-		Key::Backspace =>   Some(KeyCode::Backspace),
-		Key::Enter =>       Some(KeyCode::Enter),
-		Key::Insert =>      Some(KeyCode::Insert),
-		Key::Delete =>      Some(KeyCode::Delete),
-		Key::Home =>        Some(KeyCode::Home),
-		Key::End =>         Some(KeyCode::End),
-		Key::PageUp =>      Some(KeyCode::PageUp),
-		Key::PageDown =>    Some(KeyCode::PageDown),
-		Key::Copy =>        Some(KeyCode::Copy),
-		Key::Cut =>         Some(KeyCode::Cut),
-		Key::Paste =>       Some(KeyCode::Paste),
-		Key::F1 =>          Some(KeyCode::Function(1)),
-		Key::F2 =>          Some(KeyCode::Function(2)),
-		Key::F3 =>          Some(KeyCode::Function(3)),
-		Key::F4 =>          Some(KeyCode::Function(4)),
-		Key::F5 =>          Some(KeyCode::Function(5)),
-		Key::F6 =>          Some(KeyCode::Function(6)),
-		Key::F7 =>          Some(KeyCode::Function(7)),
-		Key::F8 =>          Some(KeyCode::Function(8)),
-		Key::F9 =>          Some(KeyCode::Function(9)),
-		Key::F10 =>         Some(KeyCode::Function(10)),
-		Key::F11 =>         Some(KeyCode::Function(11)),
-		Key::F12 =>         Some(KeyCode::Function(12)),
-		Key::F13 =>         Some(KeyCode::Function(13)),
-		Key::F14 =>         Some(KeyCode::Function(14)),
-		Key::F15 =>         Some(KeyCode::Function(15)),
-		Key::F16 =>         Some(KeyCode::Function(16)),
-		Key::F17 =>         Some(KeyCode::Function(17)),
-		Key::F18 =>         Some(KeyCode::Function(18)),
-		Key::F19 =>         Some(KeyCode::Function(19)),
-		Key::F20 =>         Some(KeyCode::Function(20)),
-		Key::F21 =>         Some(KeyCode::Function(21)),
-		Key::F22 =>         Some(KeyCode::Function(22)),
-		Key::F23 =>         Some(KeyCode::Function(23)),
-		Key::F24 =>         Some(KeyCode::Function(24)),
-		Key::F25 =>         Some(KeyCode::Function(25)),
-		Key::F26 =>         Some(KeyCode::Function(26)),
-		Key::F27 =>         Some(KeyCode::Function(27)),
-		Key::F28 =>         Some(KeyCode::Function(28)),
-		Key::F29 =>         Some(KeyCode::Function(29)),
-		Key::F30 =>         Some(KeyCode::Function(30)),
-		Key::F31 =>         Some(KeyCode::Function(31)),
-		Key::F32 =>         Some(KeyCode::Function(32)),
-		Key::F33 =>         Some(KeyCode::Function(33)),
-		Key::F34 =>         Some(KeyCode::Function(34)),
-		Key::F35 =>         Some(KeyCode::Function(35)),
+		Key::ArrowDown   => Some(KeyCode::DownArrow),
+		Key::ArrowLeft   => Some(KeyCode::LeftArrow),
+		Key::ArrowRight  => Some(KeyCode::RightArrow),
+		Key::ArrowUp     => Some(KeyCode::UpArrow),
+
+		Key::Escape      => Some(KeyCode::Escape),
+		Key::Tab         => Some(KeyCode::Tab),
+		Key::Backspace   => Some(KeyCode::Backspace),
+		Key::Enter       => Some(KeyCode::Enter),
+		Key::Insert      => Some(KeyCode::Insert),
+		Key::Delete      => Some(KeyCode::Delete),
+		Key::Home        => Some(KeyCode::Home),
+		Key::End         => Some(KeyCode::End),
+		Key::PageUp      => Some(KeyCode::PageUp),
+		Key::PageDown    => Some(KeyCode::PageDown),
+		Key::Copy        => Some(KeyCode::Copy),
+		Key::Cut         => Some(KeyCode::Cut),
+		Key::Paste       => Some(KeyCode::Paste),
+
+		Key::F1          => Some(KeyCode::Function(1)),
+		Key::F2          => Some(KeyCode::Function(2)),
+		Key::F3          => Some(KeyCode::Function(3)),
+		Key::F4          => Some(KeyCode::Function(4)),
+		Key::F5          => Some(KeyCode::Function(5)),
+		Key::F6          => Some(KeyCode::Function(6)),
+		Key::F7          => Some(KeyCode::Function(7)),
+		Key::F8          => Some(KeyCode::Function(8)),
+		Key::F9          => Some(KeyCode::Function(9)),
+		Key::F10         => Some(KeyCode::Function(10)),
+		Key::F11         => Some(KeyCode::Function(11)),
+		Key::F12         => Some(KeyCode::Function(12)),
+		Key::F13         => Some(KeyCode::Function(13)),
+		Key::F14         => Some(KeyCode::Function(14)),
+		Key::F15         => Some(KeyCode::Function(15)),
+		Key::F16         => Some(KeyCode::Function(16)),
+		Key::F17         => Some(KeyCode::Function(17)),
+		Key::F18         => Some(KeyCode::Function(18)),
+		Key::F19         => Some(KeyCode::Function(19)),
+		Key::F20         => Some(KeyCode::Function(20)),
+		Key::F21         => Some(KeyCode::Function(21)),
+		Key::F22         => Some(KeyCode::Function(22)),
+		Key::F23         => Some(KeyCode::Function(23)),
+		Key::F24         => Some(KeyCode::Function(24)),
+		Key::F25         => Some(KeyCode::Function(25)),
+		Key::F26         => Some(KeyCode::Function(26)),
+		Key::F27         => Some(KeyCode::Function(27)),
+		Key::F28         => Some(KeyCode::Function(28)),
+		Key::F29         => Some(KeyCode::Function(29)),
+		Key::F30         => Some(KeyCode::Function(30)),
+		Key::F31         => Some(KeyCode::Function(31)),
+		Key::F32         => Some(KeyCode::Function(32)),
+		Key::F33         => Some(KeyCode::Function(33)),
+		Key::F34         => Some(KeyCode::Function(34)),
+		Key::F35         => Some(KeyCode::Function(35)),
+
 		Key::BrowserBack => Some(KeyCode::BrowserBack),
-		_ => None,
+
+		_                => None,
 	}
 }
 

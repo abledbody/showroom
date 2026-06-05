@@ -9,5 +9,5 @@ ratatui = "0.30.0"
 soft_ratatui = {version = "0.2.0", features = ["unicodefonts"]}
 egui_ratatui = "2.2.0"
 portable-pty = "0.9.0"
-shadow-terminal = "0.2.3"
-tokio = "1.52.3"
+alacritty_terminal = "0.26.0"
+termwiz = "0.23.3"
