@@ -4,12 +4,10 @@ use eframe::{App, CreationContext};
 use egui_ratatui::RataguiBackend;
 use ratatui::Terminal;
 use shadow_terminal::{
-	active_terminal::ActiveTerminal,
-	output::native::{CompleteSurface, Output as TerminalOutput, SurfaceDiff},
-	termwiz::{
+	active_terminal::ActiveTerminal, output::native::{CompleteSurface, Output as TerminalOutput, SurfaceDiff}, shadow_terminal::Config as ShadowTermConfig, termwiz::{
 		input::{KeyCodeEncodeModes, KeyboardEncoding},
 		surface::Surface,
-	},
+	}
 };
 use soft_ratatui::{EmbeddedGraphics, SoftBackend, embedded_graphics_unicodefonts};
 
@@ -144,9 +142,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 	let backend = RataguiBackend::new("Showroom", soft_backend);
 
+
 	let rt = tokio::runtime::Runtime::new().unwrap();
 	let active_terminal = rt.block_on(async {
-		ActiveTerminal::start(shadow_terminal::shadow_terminal::Config::default())
+		let shell = std::env::var_os("SHELL").unwrap_or_else(|| "bash".into());
+		ActiveTerminal::start(ShadowTermConfig {
+			command: vec![shell],
+			width: DEFAULT_WIDTH,
+			height: DEFAULT_HEIGHT,
+			..Default::default()
+		})
 	});
 
 	let ratagui_terminal = Terminal::new(backend)?;
