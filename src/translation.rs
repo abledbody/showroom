@@ -21,6 +21,13 @@ pub(crate) fn transfer_surface(term: &Arc<FairMutex<Term<EventProxy>>>, buf: &mu
 			buf[(x, y)].set_char(cell.c).set_style(style);
 		}
 	}
+	
+	let cursor = content.cursor;
+	let (cx, cy) = (cursor.point.column.0 as u16, (cursor.point.line.0 + content.display_offset as i32) as u16);
+	if cx < buf.area.width && cy < buf.area.height {
+		let cell = &mut buf[(cx, cy)];
+		(cell.fg, cell.bg) = (cell.bg, cell.fg);
+	}
 }
 
 pub(crate) fn alacritty_color_to_ratatui(c: alacritty_terminal::vte::ansi::Color, colors: &Colors) -> ratatui::style::Color {
