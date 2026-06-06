@@ -15,11 +15,14 @@ use alacritty_terminal::{
 	tty::{self, Options, Shell},
 	vte::ansi::Rgb as AlacrittyColor,
 };
-use eframe::{App, CreationContext, egui::Event as EguiEvent};
+use arboard::{Clipboard, GetExtLinux, SetExtLinux};
+use eframe::{App, CreationContext, egui::{Event as EguiEvent, ViewportCommand}};
 use egui_ratatui::RataguiBackend;
 use ratatui::Terminal;
 use soft_ratatui::{EmbeddedGraphics, SoftBackend, embedded_graphics_unicodefonts};
 use termwiz::input::{KeyCodeEncodeModes, KeyboardEncoding};
+
+use crate::translation::alacritty_clipboard_type_to_arboard_kind;
 
 mod translation;
 
@@ -39,6 +42,7 @@ struct State {
 	active_terminal: Arc<FairMutex<Term<EventProxy>>>,
 	event_rx: Receiver<AlacrittyEvent>,
 	event_tx: EventLoopSender,
+	clipboard: Clipboard,
 }
 
 impl State {
@@ -48,12 +52,14 @@ impl State {
 		active_terminal: Arc<FairMutex<Term<EventProxy>>>,
 		event_rx: Receiver<AlacrittyEvent>,
 		event_tx: EventLoopSender,
+		clipboard: Clipboard,
 	) -> Self {
 		State {
 			ratagui_terminal,
 			active_terminal,
 			event_rx,
 			event_tx,
+			clipboard,
 		}
 	}
 
@@ -67,9 +73,29 @@ impl State {
 				});
 				self.event_tx.send(AlacrittyMsg::Input(fmt(color).into_bytes().into()))?;
 			}
+			AlacrittyEvent::PtyWrite(text) => self.event_tx.send(AlacrittyMsg::Input(Cow::Owned(text.into_bytes())))?,
+			AlacrittyEvent::TextAreaSizeRequest(fmt) => {
+				let size = WindowSize {
+					num_lines: DEFAULT_HEIGHT,
+					num_cols: DEFAULT_WIDTH,
+					cell_width: 8,
+					cell_height: 13,
+				};
+				self.event_tx.send(AlacrittyMsg::Input(Cow::Owned(fmt(size).into_bytes())))?;
+			},
 			AlacrittyEvent::Wakeup => {
 				ctx.request_repaint()
 			},
+			AlacrittyEvent::ClipboardStore(clipboard_type, text) => {
+				_ = self.clipboard.set().clipboard(alacritty_clipboard_type_to_arboard_kind(clipboard_type)).text(text)
+			},
+			AlacrittyEvent::ClipboardLoad(clipboard_type, receiver) => {
+				if let Ok(text) = self.clipboard.get().clipboard(alacritty_clipboard_type_to_arboard_kind(clipboard_type)).text() {
+					receiver(&text);
+				}
+			},
+			AlacrittyEvent::Title(title) => ctx.send_viewport_cmd(ViewportCommand::Title(title)),
+			AlacrittyEvent::Exit => ctx.send_viewport_cmd(ViewportCommand::Close),
 			_ => {}
 		})
 	}
@@ -223,6 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				active_terminal,
 				event_rx,
 				loop_tx,
+				Clipboard::new()?
 			)))
 		}),
 	)?;

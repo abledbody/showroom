@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use arboard::LinuxClipboardKind;
 use eframe::egui;
-use alacritty_terminal::{Term, sync::FairMutex, term::color::Colors, vte::ansi::Rgb};
+use alacritty_terminal::{Term, sync::FairMutex, term::{ClipboardType, color::Colors}, vte::ansi::NamedColor};
 use termwiz::input::KeyCode;
 
 use crate::EventProxy;
@@ -28,8 +29,15 @@ pub(crate) fn alacritty_color_to_ratatui(c: alacritty_terminal::vte::ansi::Color
 
 	match c {
 		Named(named_color) => {
-			let rgb = colors[named_color as usize].unwrap_or(Rgb {r: 0, g: 0, b: 0});
-			RatatuiColor::Rgb(rgb.r, rgb.g, rgb.b)
+			match colors[named_color as usize] {
+				Some(rgb) => RatatuiColor::Rgb(rgb.r, rgb.g, rgb.b),
+				None => {
+					match named_color {
+						NamedColor::Background => RatatuiColor::DarkGray,
+						_ => RatatuiColor::White,
+					}
+				},
+			}
 		},
 		Spec(rgb) => RatatuiColor::Rgb(rgb.r, rgb.g, rgb.b),
 		Indexed(index) => RatatuiColor::Indexed(index),
@@ -108,4 +116,12 @@ pub(crate) fn egui_mod_to_termwiz(modifiers: egui::Modifiers) -> termwiz::input:
 		| if modifiers.alt {TwMod::ALT} else {TwMod::NONE}
 		| if modifiers.shift {TwMod::SHIFT} else {TwMod::NONE}
 		| if modifiers.mac_cmd {TwMod::SUPER} else {TwMod::NONE}
+}
+
+#[cfg(all(unix, not(any(target_os = "macos", target_os = "android", target_os = "emscripten"))))]
+pub(crate) fn alacritty_clipboard_type_to_arboard_kind(t: ClipboardType) -> LinuxClipboardKind {
+	match t {
+		ClipboardType::Clipboard => LinuxClipboardKind::Clipboard,
+		ClipboardType::Selection => LinuxClipboardKind::Primary,
+	}
 }
