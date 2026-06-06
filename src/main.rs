@@ -13,7 +13,7 @@ use alacritty_terminal::{
 	sync::FairMutex,
 	term::Config as AlacrittyConfig,
 	tty::{self, Options, Shell},
-	vte::ansi::Rgb as AlacrittyColor,
+	vte::ansi::{self, Rgb as AlacrittyColor},
 };
 use arboard::{Clipboard, GetExtLinux, SetExtLinux};
 use eframe::{App, CreationContext, egui::{Event as EguiEvent, ViewportCommand}};
@@ -29,6 +29,8 @@ mod translation;
 const DEFAULT_TOTAL_LINES: usize = 4000;
 const DEFAULT_WIDTH: u16 = 80;
 const DEFAULT_HEIGHT: u16 = 32;
+const CELL_WIDTH: u16 = 8;
+const CELL_HEIGHT: u16 = 13;
 
 const DEFAULT_KEY_CODE_ENCODE_MODE: KeyCodeEncodeModes = KeyCodeEncodeModes {
 	encoding: KeyboardEncoding::Xterm,
@@ -64,6 +66,7 @@ impl State {
 	}
 
 	fn apply_alacritty_event(&mut self, ctx: &eframe::egui::Context, event: AlacrittyEvent) -> Result<(), Box<dyn std::error::Error>> {
+		eprintln!("{:?}", event);
 		Ok(match event {
 			AlacrittyEvent::ColorRequest(index, fmt) => {
 				let color = self.active_terminal.lock().colors()[index].unwrap_or(AlacrittyColor {
@@ -78,8 +81,8 @@ impl State {
 				let size = WindowSize {
 					num_lines: DEFAULT_HEIGHT,
 					num_cols: DEFAULT_WIDTH,
-					cell_width: 8,
-					cell_height: 13,
+					cell_width: CELL_WIDTH,
+					cell_height: CELL_HEIGHT,
 				};
 				self.event_tx.send(AlacrittyMsg::Input(Cow::Owned(fmt(size).into_bytes())))?;
 			},
@@ -94,7 +97,7 @@ impl State {
 					receiver(&text);
 				}
 			},
-			AlacrittyEvent::Title(title) => ctx.send_viewport_cmd(ViewportCommand::Title(title)),
+			AlacrittyEvent::Title(title) => ctx.send_viewport_cmd(ViewportCommand::Title(title + " — Showroom")),
 			AlacrittyEvent::Exit => ctx.send_viewport_cmd(ViewportCommand::Close),
 			_ => {}
 		})
@@ -189,7 +192,69 @@ impl Dimensions for Size {
 	}
 }
 
+fn set_default_colors(term: &Arc<FairMutex<Term<EventProxy>>>) {
+	use ansi::{Handler, NamedColor::*, Rgb};
+
+	let mut term = term.lock();
+	
+	for &(index, rgb) in &[
+		(Black         as usize, Rgb { r:   0, g:   0, b:   0 }),
+		(Red           as usize, Rgb { r: 205, g:   0, b:   0 }),
+		(Green         as usize, Rgb { r:   0, g: 205, b:   0 }),
+		(Yellow        as usize, Rgb { r: 205, g: 205, b:   0 }),
+		(Blue          as usize, Rgb { r:   0, g:   0, b: 238 }),
+		(Magenta       as usize, Rgb { r: 205, g:   0, b: 205 }),
+		(Cyan          as usize, Rgb { r:   0, g: 205, b: 205 }),
+		(White         as usize, Rgb { r: 229, g: 229, b: 229 }),
+		(BrightBlack   as usize, Rgb { r: 127, g: 127, b: 127 }),
+		(BrightRed     as usize, Rgb { r: 255, g:   0, b:   0 }),
+		(BrightGreen   as usize, Rgb { r:   0, g: 255, b:   0 }),
+		(BrightYellow  as usize, Rgb { r: 255, g: 255, b:   0 }),
+		(BrightBlue    as usize, Rgb { r:  92, g:  92, b: 255 }),
+		(BrightMagenta as usize, Rgb { r: 255, g:   0, b: 255 }),
+		(BrightCyan    as usize, Rgb { r:   0, g: 255, b: 255 }),
+		(BrightWhite   as usize, Rgb { r: 255, g: 255, b: 255 }),
+		(Foreground    as usize, Rgb { r: 229, g: 229, b: 229 }),
+		(Background    as usize, Rgb { r:  50, g:  50, b:  50 }),
+		(Cursor        as usize, Rgb { r: 229, g: 229, b: 229 }),
+	] {
+		term.set_color(index, rgb);
+	}
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+	let shell_path = match std::env::var_os("SHELL") {
+		Some(shell_path) => match shell_path.into_string() {
+			Ok(shell_path) => shell_path,
+			Err(_) => "bash".into(),
+		},
+		None => "bash".into(),
+	};
+
+	tty::setup_env();
+	if std::process::Command::new("infocmp")
+		.arg("alacritty")
+		.output()
+		.map(|o| !o.status.success())
+		.unwrap_or(true)
+	{
+		unsafe { std::env::set_var("TERM", "xterm-256color"); }
+	}
+
+	let pty = tty::new(
+		&Options {
+			shell: Some(Shell::new(shell_path, vec![])),
+			..Default::default()
+		},
+		WindowSize {
+			num_lines: DEFAULT_HEIGHT,
+			num_cols: DEFAULT_WIDTH,
+			cell_width: CELL_WIDTH,
+			cell_height: CELL_HEIGHT,
+		},
+		0,
+	)?;
+	
 	let soft_backend = SoftBackend::new(
 		DEFAULT_WIDTH,
 		DEFAULT_HEIGHT,
@@ -210,30 +275,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	};
 	let active_terminal = Arc::new(FairMutex::new(Term::new(config, &size, event_proxy.clone())));
 
+	set_default_colors(&active_terminal);
+
 	let ratagui_terminal = Terminal::new(backend)?;
-
-	let shell_path = match std::env::var_os("SHELL") {
-		Some(shell_path) => match shell_path.into_string() {
-			Ok(shell_path) => shell_path,
-			Err(_) => "bash".into(),
-		},
-		None => "bash".into(),
-	};
-
-	tty::setup_env();
-	let pty = tty::new(
-		&Options {
-			shell: Some(Shell::new(shell_path, vec![])),
-			..Default::default()
-		},
-		WindowSize {
-			num_lines: DEFAULT_HEIGHT,
-			num_cols: DEFAULT_WIDTH,
-			cell_width: 8,
-			cell_height: 13,
-		},
-		0,
-	)?;
 
 	let event_loop = EventLoop::new(active_terminal.clone(), event_proxy, pty, false, false)?;
 	let loop_tx = event_loop.channel();
