@@ -45,6 +45,8 @@ struct State {
 	event_rx: Receiver<AlacrittyEvent>,
 	event_tx: EventLoopSender,
 	clipboard: Clipboard,
+	cols: u16,
+	rows: u16,
 }
 
 impl State {
@@ -55,6 +57,8 @@ impl State {
 		event_rx: Receiver<AlacrittyEvent>,
 		event_tx: EventLoopSender,
 		clipboard: Clipboard,
+		cols: u16,
+		rows: u16,
 	) -> Self {
 		State {
 			ratagui_terminal,
@@ -62,6 +66,8 @@ impl State {
 			event_rx,
 			event_tx,
 			clipboard,
+			cols,
+			rows,
 		}
 	}
 
@@ -147,6 +153,34 @@ impl App for State {
 	}
 
 	fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+		let content_size = ctx.content_rect().size();
+		let next_cols = (content_size.x / (CELL_WIDTH as f32)).ceil() as u16;
+		let next_rows = (content_size.y / (CELL_HEIGHT as f32)).ceil() as u16;
+
+		if next_cols != self.cols || next_rows != self.rows {
+			if let Err(e) = self.event_tx.send(
+				AlacrittyMsg::Resize(
+					WindowSize {
+						num_cols: next_cols,
+						num_lines: next_rows,
+						cell_width: CELL_WIDTH,
+						cell_height: CELL_HEIGHT,
+					}
+				)
+			) {
+				eprintln!("Failed to resize terminal: {}", e);
+			}
+
+			self.active_terminal.lock().resize(Size {
+				total_lines: DEFAULT_TOTAL_LINES,
+				screen_lines: next_rows as usize,
+				columns: next_cols as usize,
+			});
+
+			self.cols = next_cols;
+			self.rows = next_rows;
+		}
+
 		while let Ok(event) = self.event_rx.try_recv() {
 			if let Err(e) = self.apply_alacritty_event(&ctx, event) {
 				eprintln!("{}", e);
@@ -293,7 +327,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 				active_terminal,
 				event_rx,
 				loop_tx,
-				Clipboard::new()?
+				Clipboard::new()?,
+				DEFAULT_WIDTH,
+				DEFAULT_HEIGHT,
 			)))
 		}),
 	)?;
