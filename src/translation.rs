@@ -8,17 +8,28 @@ use termwiz::input::KeyCode;
 use crate::EventProxy;
 
 pub(crate) fn transfer_surface(term: &Arc<FairMutex<Term<EventProxy>>>, buf: &mut ratatui::buffer::Buffer) {
-	let term = term.lock();
+	let term = term.lock_unfair();
 	let content = term.renderable_content();
 	let colors = content.colors;
+	
 	for cell in content.display_iter {
+		let ratatui_fg = alacritty_color_to_ratatui(cell.fg, &colors);
+		let ratatui_bg = alacritty_color_to_ratatui(cell.bg, &colors);
 		let style = ratatui::style::Style::new()
-			.fg(alacritty_color_to_ratatui(cell.fg, &colors))
-			.bg(alacritty_color_to_ratatui(cell.bg, &colors));
+			.fg(ratatui_fg)
+			.bg(ratatui_bg);
 
 		let (x, y) = (cell.point.column.0 as u16, (cell.point.line.0 + content.display_offset as i32) as u16);
 		if x < buf.area.width && y < buf.area.height {
-			buf[(x, y)].set_char(cell.c).set_style(style);
+			let target_cell = &mut buf[(x, y)];
+			
+			if
+				target_cell.symbol().chars().next().unwrap() == cell.c
+				&& target_cell.bg == ratatui_bg
+				&& target_cell.fg == ratatui_fg
+			{ continue; }
+
+			target_cell.set_char(cell.c).set_style(style);
 		}
 	}
 	
