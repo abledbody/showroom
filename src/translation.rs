@@ -1,64 +1,35 @@
-use std::sync::Arc;
-
 use arboard::LinuxClipboardKind;
 use eframe::egui;
-use alacritty_terminal::{Term, sync::FairMutex, term::{ClipboardType, color::Colors}, vte::ansi::NamedColor};
+use alacritty_terminal::{term::{ClipboardType, color::Colors}, vte::ansi::{self, NamedColor}};
+use egui::Color32;
 use termwiz::input::KeyCode;
 
-use crate::EventProxy;
 
-pub(crate) fn transfer_surface(term: &Arc<FairMutex<Term<EventProxy>>>, buf: &mut ratatui::buffer::Buffer) {
-	let term = term.lock_unfair();
-	let content = term.renderable_content();
-	let colors = content.colors;
-	
-	for cell in content.display_iter {
-		let ratatui_fg = alacritty_color_to_ratatui(cell.fg, &colors);
-		let ratatui_bg = alacritty_color_to_ratatui(cell.bg, &colors);
-		let style = ratatui::style::Style::new()
-			.fg(ratatui_fg)
-			.bg(ratatui_bg);
-
-		let (x, y) = (cell.point.column.0 as u16, (cell.point.line.0 + content.display_offset as i32) as u16);
-		if x < buf.area.width && y < buf.area.height {
-			let target_cell = &mut buf[(x, y)];
-			
-			if
-				target_cell.symbol().chars().next().unwrap() == cell.c
-				&& target_cell.bg == ratatui_bg
-				&& target_cell.fg == ratatui_fg
-			{ continue; }
-
-			target_cell.set_char(cell.c).set_style(style);
-		}
-	}
-	
-	let cursor = content.cursor;
-	let (cx, cy) = (cursor.point.column.0 as u16, (cursor.point.line.0 + content.display_offset as i32) as u16);
-	if cx < buf.area.width && cy < buf.area.height {
-		let cell = &mut buf[(cx, cy)];
-		(cell.fg, cell.bg) = (cell.bg, cell.fg);
-	}
-}
-
-pub(crate) fn alacritty_color_to_ratatui(c: alacritty_terminal::vte::ansi::Color, colors: &Colors) -> ratatui::style::Color {
-	use ratatui::style::Color as RatatuiColor;
+pub(crate) fn alacritty_to_egui_color(c: ansi::Color, colors: &Colors) -> Color32 {
 	use alacritty_terminal::vte::ansi::Color::*;
 
 	match c {
 		Named(named_color) => {
 			match colors[named_color as usize] {
-				Some(rgb) => RatatuiColor::Rgb(rgb.r, rgb.g, rgb.b),
+				Some(rgb) => Color32::from_rgb(rgb.r, rgb.g, rgb.b),
 				None => {
 					match named_color {
-						NamedColor::Background => RatatuiColor::DarkGray,
-						_ => RatatuiColor::White,
+						NamedColor::Background => Color32::from_rgb(30, 30, 30),
+						_ => Color32::WHITE,
 					}
 				},
 			}
 		},
-		Spec(rgb) => RatatuiColor::Rgb(rgb.r, rgb.g, rgb.b),
-		Indexed(index) => RatatuiColor::Indexed(index),
+		Spec(rgb) => Color32::from_rgb(rgb.r, rgb.g, rgb.b),
+		Indexed(index) => {
+			if let Some(rgb) = colors[index as usize] {
+				Color32::from_rgb(rgb.r, rgb.g, rgb.b)
+			}
+			else {
+				eprintln!("Attempted to render color with index {}, which is unhandled. Rendering as magenta.", index);
+				Color32::MAGENTA
+			}
+		},
 	}
 }
 

@@ -17,12 +17,9 @@ use alacritty_terminal::{
 };
 use arboard::{Clipboard, GetExtLinux, SetExtLinux};
 use eframe::{App, CreationContext, egui::{Event as EguiEvent, ViewportCommand}};
-use egui_ratatui::RataguiBackend;
-use ratatui::Terminal;
-use soft_ratatui::{EmbeddedGraphics, SoftBackend, embedded_graphics_unicodefonts};
 use termwiz::input::{KeyCodeEncodeModes, KeyboardEncoding};
 
-use crate::translation::alacritty_clipboard_type_to_arboard_kind;
+use crate::translation::{alacritty_clipboard_type_to_arboard_kind, alacritty_to_egui_color};
 
 mod translation;
 
@@ -40,8 +37,7 @@ const DEFAULT_KEY_CODE_ENCODE_MODE: KeyCodeEncodeModes = KeyCodeEncodeModes {
 };
 
 struct State {
-	ratagui_terminal: Terminal<RataguiBackend<EmbeddedGraphics>>,
-	active_terminal: Arc<FairMutex<Term<EventProxy>>>,
+	terminal: Arc<FairMutex<Term<EventProxy>>>,
 	event_rx: Receiver<AlacrittyEvent>,
 	event_tx: EventLoopSender,
 	clipboard: Clipboard,
@@ -52,8 +48,7 @@ struct State {
 impl State {
 	fn new(
 		_creation_context: &CreationContext,
-		ratagui_terminal: Terminal<RataguiBackend<EmbeddedGraphics>>,
-		active_terminal: Arc<FairMutex<Term<EventProxy>>>,
+		terminal: Arc<FairMutex<Term<EventProxy>>>,
 		event_rx: Receiver<AlacrittyEvent>,
 		event_tx: EventLoopSender,
 		clipboard: Clipboard,
@@ -61,8 +56,7 @@ impl State {
 		rows: u16,
 	) -> Self {
 		State {
-			ratagui_terminal,
-			active_terminal,
+			terminal,
 			event_rx,
 			event_tx,
 			clipboard,
@@ -75,7 +69,7 @@ impl State {
 		eprintln!("{:?}", event);
 		Ok(match event {
 			AlacrittyEvent::ColorRequest(index, fmt) => {
-				let color = self.active_terminal.lock().colors()[index].unwrap_or(AlacrittyColor {
+				let color = self.terminal.lock().colors()[index].unwrap_or(AlacrittyColor {
 					r: 0,
 					g: 0,
 					b: 0,
@@ -141,15 +135,7 @@ impl State {
 
 impl App for State {
 	fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
-		match self
-			.ratagui_terminal
-			.draw(|f| translation::transfer_surface(&self.active_terminal, f.buffer_mut()))
-		{
-			Err(_) => eprintln!("Failed to draw terminal."),
-			_ => {}
-		};
-
-		ui.add(self.ratagui_terminal.backend_mut());
+		render_terminal(&self.terminal, ui);
 	}
 
 	fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
@@ -171,7 +157,7 @@ impl App for State {
 				eprintln!("Failed to resize terminal: {}", e);
 			}
 
-			self.active_terminal.lock().resize(Size {
+			self.terminal.lock().resize(Size {
 				total_lines: DEFAULT_TOTAL_LINES,
 				screen_lines: next_rows as usize,
 				columns: next_cols as usize,
@@ -226,33 +212,32 @@ impl Dimensions for Size {
 	}
 }
 
-fn set_default_colors(term: &Arc<FairMutex<Term<EventProxy>>>) {
-	use ansi::{Handler, NamedColor::*, Rgb};
+pub(crate) fn render_terminal(
+	term: &Arc<FairMutex<Term<EventProxy>>>,
+	ui: &mut egui::Ui,
+) {
+	let font_id = egui::FontId::monospace(13.0);
 
-	let mut term = term.lock();
-	
-	for &(index, rgb) in &[
-		(Black         as usize, Rgb { r:   0, g:   0, b:   0 }),
-		(Red           as usize, Rgb { r: 205, g:   0, b:   0 }),
-		(Green         as usize, Rgb { r:   0, g: 205, b:   0 }),
-		(Yellow        as usize, Rgb { r: 205, g: 205, b:   0 }),
-		(Blue          as usize, Rgb { r:   0, g:   0, b: 238 }),
-		(Magenta       as usize, Rgb { r: 205, g:   0, b: 205 }),
-		(Cyan          as usize, Rgb { r:   0, g: 205, b: 205 }),
-		(White         as usize, Rgb { r: 229, g: 229, b: 229 }),
-		(BrightBlack   as usize, Rgb { r: 127, g: 127, b: 127 }),
-		(BrightRed     as usize, Rgb { r: 255, g:   0, b:   0 }),
-		(BrightGreen   as usize, Rgb { r:   0, g: 255, b:   0 }),
-		(BrightYellow  as usize, Rgb { r: 255, g: 255, b:   0 }),
-		(BrightBlue    as usize, Rgb { r:  92, g:  92, b: 255 }),
-		(BrightMagenta as usize, Rgb { r: 255, g:   0, b: 255 }),
-		(BrightCyan    as usize, Rgb { r:   0, g: 255, b: 255 }),
-		(BrightWhite   as usize, Rgb { r: 255, g: 255, b: 255 }),
-		(Foreground    as usize, Rgb { r: 229, g: 229, b: 229 }),
-		(Background    as usize, Rgb { r:  50, g:  50, b:  50 }),
-		(Cursor        as usize, Rgb { r: 229, g: 229, b: 229 }),
-	] {
-		term.set_color(index, rgb);
+	let painter = ui.painter();
+	let origin = ui.min_rect().min;
+
+	let term = term.lock_unfair();
+	let content = term.renderable_content();
+	let alac_colors = content.colors;
+
+	for cell in content.display_iter {
+		let x = cell.point.column.0 as f32 * CELL_WIDTH as f32;
+		let y = (cell.point.line.0 + content.display_offset as i32) as f32 * CELL_WIDTH as f32;
+		let pos = origin + egui::vec2(x, y);
+		let rect = egui::Rect::from_min_size(pos, egui::vec2(CELL_WIDTH as f32, CELL_HEIGHT as f32));
+
+		let bg = alacritty_to_egui_color(cell.bg, &alac_colors);
+		let fg = alacritty_to_egui_color(cell.fg, &alac_colors);
+
+		painter.rect_filled(rect, 0.0, bg);
+		if cell.c != ' ' {
+			painter.text(pos, egui::Align2::LEFT_TOP, cell.c, font_id.clone(), fg);
+		}
 	}
 }
 
@@ -288,16 +273,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		},
 		0,
 	)?;
-	
-	let soft_backend = SoftBackend::new(
-		DEFAULT_WIDTH,
-		DEFAULT_HEIGHT,
-		embedded_graphics_unicodefonts::MONO_8X13,
-		Some(embedded_graphics_unicodefonts::MONO_8X13_BOLD),
-		Some(embedded_graphics_unicodefonts::MONO_8X13_ITALIC),
-	);
-
-	let backend = RataguiBackend::new("Showroom", soft_backend);
 
 	let config = AlacrittyConfig::default();
 	let (event_tx, event_rx) = std::sync::mpsc::channel();
@@ -309,10 +284,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	};
 	let active_terminal = Arc::new(FairMutex::new(Term::new(config, &size, event_proxy.clone())));
 
-	set_default_colors(&active_terminal);
-
-	let ratagui_terminal = Terminal::new(backend)?;
-
 	let event_loop = EventLoop::new(active_terminal.clone(), event_proxy, pty, false, false)?;
 	let loop_tx = event_loop.channel();
 	event_loop.spawn();
@@ -323,7 +294,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		Box::new(|cc| {
 			Ok(Box::new(State::new(
 				cc,
-				ratagui_terminal,
 				active_terminal,
 				event_rx,
 				loop_tx,
