@@ -35,8 +35,6 @@ mod translation;
 const DEFAULT_TOTAL_LINES: usize = 4000;
 const DEFAULT_WIDTH: u16 = 80;
 const DEFAULT_HEIGHT: u16 = 32;
-const CELL_WIDTH: u16 = 12;
-const CELL_HEIGHT: u16 = 15;
 
 const DEFAULT_KEY_CODE_ENCODE_MODE: KeyCodeEncodeModes = KeyCodeEncodeModes {
 	encoding: KeyboardEncoding::Xterm,
@@ -52,6 +50,8 @@ struct State {
 	clipboard: Clipboard,
 	cols: u16,
 	rows: u16,
+	cell_width: f32,
+	cell_height: f32,
 }
 
 impl State {
@@ -63,6 +63,8 @@ impl State {
 		clipboard: Clipboard,
 		cols: u16,
 		rows: u16,
+		cell_width: f32,
+		cell_height: f32,
 	) -> Self {
 		State {
 			terminal,
@@ -71,17 +73,15 @@ impl State {
 			clipboard,
 			cols,
 			rows,
+			cell_width,
+			cell_height,
 		}
 	}
 
 	fn apply_alacritty_event(&mut self, ctx: &eframe::egui::Context, event: AlacrittyEvent) -> Result<(), Box<dyn std::error::Error>> {
 		Ok(match event {
 			AlacrittyEvent::ColorRequest(index, fmt) => {
-				let color = self.terminal.lock().colors()[index].unwrap_or(AlacrittyColor {
-					r: 0,
-					g: 0,
-					b: 0,
-				});
+				let color = self.terminal.lock().colors()[index].unwrap_or(AlacrittyColor { r: 0, g: 0, b: 0, });
 				self.event_tx.send(AlacrittyMsg::Input(fmt(color).into_bytes().into()))?;
 			}
 			AlacrittyEvent::PtyWrite(text) => self.event_tx.send(AlacrittyMsg::Input(Cow::Owned(text.into_bytes())))?,
@@ -89,8 +89,8 @@ impl State {
 				let size = WindowSize {
 					num_lines: DEFAULT_HEIGHT,
 					num_cols: DEFAULT_WIDTH,
-					cell_width: CELL_WIDTH,
-					cell_height: CELL_HEIGHT,
+					cell_width: self.cell_width.round() as u16,
+					cell_height: self.cell_height.round() as u16,
 				};
 				self.event_tx.send(AlacrittyMsg::Input(Cow::Owned(fmt(size).into_bytes())))?;
 			},
@@ -189,9 +189,12 @@ impl App for State {
 	}
 
 	fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+		let font_id = egui::FontId::monospace(13.0);
+		(self.cell_width, self.cell_height) = ctx.fonts_mut(|f| (f.glyph_width(&font_id, ' '), f.row_height(&font_id)));
+
 		let content_size = ctx.content_rect().size();
-		let next_cols = (content_size.x / (CELL_WIDTH as f32)).ceil() as u16;
-		let next_rows = (content_size.y / (CELL_HEIGHT as f32)).ceil() as u16;
+		let next_cols = (content_size.x / self.cell_width).ceil() as u16;
+		let next_rows = (content_size.y / self.cell_height).ceil() as u16;
 
 		if next_cols != self.cols || next_rows != self.rows {
 			if let Err(e) = self.event_tx.send(
@@ -199,8 +202,8 @@ impl App for State {
 					WindowSize {
 						num_cols: next_cols,
 						num_lines: next_rows,
-						cell_width: CELL_WIDTH,
-						cell_height: CELL_HEIGHT,
+						cell_width: self.cell_width.round() as u16,
+						cell_height: self.cell_height.round() as u16,
 					}
 				)
 			) {
@@ -293,66 +296,70 @@ fn set_default_colors(term: &Arc<FairMutex<Term<EventProxy>>>) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-	let shell_path = match std::env::var_os("SHELL") {
-		Some(shell_path) => match shell_path.into_string() {
-			Ok(shell_path) => shell_path,
-			Err(_) => "bash".into(),
-		},
-		None => "bash".into(),
-	};
 
-	tty::setup_env();
-	if std::process::Command::new("infocmp")
-		.arg("alacritty")
-		.output()
-		.map(|o| !o.status.success())
-		.unwrap_or(true)
-	{
-		unsafe { std::env::set_var("TERM", "xterm-256color"); }
-	}
-
-	let pty = tty::new(
-		&Options {
-			shell: Some(Shell::new(shell_path, vec![])),
-			..Default::default()
-		},
-		WindowSize {
-			num_lines: DEFAULT_HEIGHT,
-			num_cols: DEFAULT_WIDTH,
-			cell_width: CELL_WIDTH,
-			cell_height: CELL_HEIGHT,
-		},
-		0,
-	)?;
-
-	let config = AlacrittyConfig::default();
-	let (event_tx, event_rx) = std::sync::mpsc::channel();
-	let event_proxy = EventProxy(event_tx);
-	let size = Size {
-		total_lines: DEFAULT_TOTAL_LINES,
-		screen_lines: DEFAULT_HEIGHT as usize,
-		columns: DEFAULT_WIDTH as usize,
-	};
-	let active_terminal = Arc::new(FairMutex::new(Term::new(config, &size, event_proxy.clone())));
-
-	set_default_colors(&active_terminal);
-
-	let event_loop = EventLoop::new(active_terminal.clone(), event_proxy, pty, false, false)?;
-	let loop_tx = event_loop.channel();
-	event_loop.spawn();
 
 	eframe::run_native(
 		"Showroom",
 		eframe::NativeOptions::default(),
-		Box::new(|cc| {
+		Box::new(|ctx| {
+			let shell_path = match std::env::var_os("SHELL") {
+				Some(shell_path) => match shell_path.into_string() {
+					Ok(shell_path) => shell_path,
+					Err(_) => "bash".into(),
+				},
+				None => "bash".into(),
+			};
+
+			tty::setup_env();
+			if std::process::Command::new("infocmp")
+				.arg("alacritty")
+				.output()
+				.map(|o| !o.status.success())
+				.unwrap_or(true)
+			{
+				unsafe { std::env::set_var("TERM", "xterm-256color"); }
+			}
+
+			let pty = tty::new(
+				&Options {
+					shell: Some(Shell::new(shell_path, vec![])),
+					..Default::default()
+				},
+				WindowSize {
+					num_lines: DEFAULT_HEIGHT,
+					num_cols: DEFAULT_WIDTH,
+					cell_width: 12,
+					cell_height: 15,
+				},
+				0,
+			)?;
+
+			let config = AlacrittyConfig::default();
+			let (event_tx, event_rx) = std::sync::mpsc::channel();
+			let event_proxy = EventProxy(event_tx);
+			let size = Size {
+				total_lines: DEFAULT_TOTAL_LINES,
+				screen_lines: DEFAULT_HEIGHT as usize,
+				columns: DEFAULT_WIDTH as usize,
+			};
+			let active_terminal = Arc::new(FairMutex::new(Term::new(config, &size, event_proxy.clone())));
+
+			set_default_colors(&active_terminal);
+
+			let event_loop = EventLoop::new(active_terminal.clone(), event_proxy, pty, false, false)?;
+			let loop_tx = event_loop.channel();
+			event_loop.spawn();
+
 			Ok(Box::new(State::new(
-				cc,
+				ctx,
 				active_terminal,
 				event_rx,
 				loop_tx,
 				Clipboard::new()?,
 				DEFAULT_WIDTH,
 				DEFAULT_HEIGHT,
+				0.0,
+				0.0,
 			)))
 		}),
 	)?;
