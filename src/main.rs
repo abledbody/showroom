@@ -66,7 +66,6 @@ impl State {
 	}
 
 	fn apply_alacritty_event(&mut self, ctx: &eframe::egui::Context, event: AlacrittyEvent) -> Result<(), Box<dyn std::error::Error>> {
-		eprintln!("{:?}", event);
 		Ok(match event {
 			AlacrittyEvent::ColorRequest(index, fmt) => {
 				let color = self.terminal.lock().colors()[index].unwrap_or(AlacrittyColor {
@@ -227,7 +226,7 @@ pub(crate) fn render_terminal(
 
 	for cell in content.display_iter {
 		let x = cell.point.column.0 as f32 * CELL_WIDTH as f32;
-		let y = (cell.point.line.0 + content.display_offset as i32) as f32 * CELL_WIDTH as f32;
+		let y = (cell.point.line.0 + content.display_offset as i32) as f32 * CELL_HEIGHT as f32;
 		let pos = origin + egui::vec2(x, y);
 		let rect = egui::Rect::from_min_size(pos, egui::vec2(CELL_WIDTH as f32, CELL_HEIGHT as f32));
 
@@ -238,6 +237,36 @@ pub(crate) fn render_terminal(
 		if cell.c != ' ' {
 			painter.text(pos, egui::Align2::LEFT_TOP, cell.c, font_id.clone(), fg);
 		}
+	}
+}
+
+fn set_default_colors(term: &Arc<FairMutex<Term<EventProxy>>>) {
+	use ansi::{Handler, NamedColor::*, Rgb};
+
+	let mut term = term.lock();
+	
+	for &(index, rgb) in &[
+		(Black         as usize, Rgb { r:   0, g:   0, b:   0 }),
+		(Red           as usize, Rgb { r: 205, g:   0, b:   0 }),
+		(Green         as usize, Rgb { r:   0, g: 205, b:   0 }),
+		(Yellow        as usize, Rgb { r: 205, g: 205, b:   0 }),
+		(Blue          as usize, Rgb { r:   0, g:   0, b: 238 }),
+		(Magenta       as usize, Rgb { r: 205, g:   0, b: 205 }),
+		(Cyan          as usize, Rgb { r:   0, g: 205, b: 205 }),
+		(White         as usize, Rgb { r: 229, g: 229, b: 229 }),
+		(BrightBlack   as usize, Rgb { r: 127, g: 127, b: 127 }),
+		(BrightRed     as usize, Rgb { r: 255, g:   0, b:   0 }),
+		(BrightGreen   as usize, Rgb { r:   0, g: 255, b:   0 }),
+		(BrightYellow  as usize, Rgb { r: 255, g: 255, b:   0 }),
+		(BrightBlue    as usize, Rgb { r:  92, g:  92, b: 255 }),
+		(BrightMagenta as usize, Rgb { r: 255, g:   0, b: 255 }),
+		(BrightCyan    as usize, Rgb { r:   0, g: 255, b: 255 }),
+		(BrightWhite   as usize, Rgb { r: 255, g: 255, b: 255 }),
+		(Foreground    as usize, Rgb { r: 229, g: 229, b: 229 }),
+		(Background    as usize, Rgb { r:  50, g:  50, b:  50 }),
+		(Cursor        as usize, Rgb { r: 229, g: 229, b: 229 }),
+	] {
+		term.set_color(index, rgb);
 	}
 }
 
@@ -283,6 +312,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 		columns: DEFAULT_WIDTH as usize,
 	};
 	let active_terminal = Arc::new(FairMutex::new(Term::new(config, &size, event_proxy.clone())));
+
+	set_default_colors(&active_terminal);
 
 	let event_loop = EventLoop::new(active_terminal.clone(), event_proxy, pty, false, false)?;
 	let loop_tx = event_loop.channel();
