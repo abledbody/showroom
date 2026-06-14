@@ -14,8 +14,8 @@ pub(crate) fn alacritty_to_egui_color(c: ansi::Color, colors: &Colors) -> Color3
 				Some(rgb) => Color32::from_rgb(rgb.r, rgb.g, rgb.b),
 				None => {
 					match named_color {
-						NamedColor::Background => Color32::from_rgb(30, 30, 30),
-						_ => Color32::WHITE,
+						NamedColor::Background => Color32::from_rgb(17, 24, 30),
+						_ => Color32::from_rgb(229, 229, 229),
 					}
 				},
 			}

@@ -6,17 +6,26 @@ use std::{
 };
 
 use alacritty_terminal::{
-	Term,
-	event::{Event as AlacrittyEvent, EventListener, WindowSize},
-	event_loop::{EventLoop, EventLoopSender, Msg as AlacrittyMsg},
+	Term, event::{
+		Event as AlacrittyEvent,
+		EventListener,
+		WindowSize
+	},
+	event_loop::{
+		EventLoop,
+		EventLoopSender,
+		Msg as AlacrittyMsg
+	},
 	grid::Dimensions,
+	index::{Column, Line},
 	sync::FairMutex,
 	term::Config as AlacrittyConfig,
 	tty::{self, Options, Shell},
-	vte::ansi::{self, Rgb as AlacrittyColor},
+	vte::ansi::{self, Rgb as AlacrittyColor}
 };
 use arboard::{Clipboard, GetExtLinux, SetExtLinux};
 use eframe::{App, CreationContext, egui::{Event as EguiEvent, ViewportCommand}};
+use egui::{TextFormat, text::LayoutJob};
 use termwiz::input::{KeyCodeEncodeModes, KeyboardEncoding};
 
 use crate::translation::{alacritty_clipboard_type_to_arboard_kind, alacritty_to_egui_color};
@@ -26,8 +35,8 @@ mod translation;
 const DEFAULT_TOTAL_LINES: usize = 4000;
 const DEFAULT_WIDTH: u16 = 80;
 const DEFAULT_HEIGHT: u16 = 32;
-const CELL_WIDTH: u16 = 8;
-const CELL_HEIGHT: u16 = 13;
+const CELL_WIDTH: u16 = 12;
+const CELL_HEIGHT: u16 = 15;
 
 const DEFAULT_KEY_CODE_ENCODE_MODE: KeyCodeEncodeModes = KeyCodeEncodeModes {
 	encoding: KeyboardEncoding::Xterm,
@@ -130,11 +139,53 @@ impl State {
 
 		Ok(())
 	}
+
+	fn render_terminal(
+		self: &Self,
+		ui: &mut egui::Ui,
+	) {
+		let font_id = egui::FontId::monospace(13.0);
+
+		let painter = ui.painter();
+		let origin = ui.min_rect().min;
+
+		let term = self.terminal.lock_unfair();
+		let content = term.renderable_content();
+		let alac_colors = content.colors;
+		let grid = term.grid();
+
+		let mut job = LayoutJob::default();
+
+		for row_i in 0..grid.screen_lines() {
+			let line = &grid[Line(row_i as i32 - content.display_offset as i32)];
+
+			for col_i in 0..grid.columns() {
+				let cell = &line[Column(col_i as usize)];
+
+				let bg = alacritty_to_egui_color(cell.bg, &alac_colors);
+				let fg = alacritty_to_egui_color(cell.fg, &alac_colors);
+
+				job.append(&cell.c.to_string(), 0.0, TextFormat {
+					font_id: font_id.clone(),
+					color: fg,
+					background: bg,
+					..Default::default()
+				});
+			}
+
+			if row_i != grid.screen_lines() - 1 {
+				job.append("\n", 0.0, TextFormat::default())
+			}
+		}
+		
+		let galley = painter.layout_job(job);
+		painter.galley(origin + egui::Vec2::ZERO, galley, egui::Color32::MAGENTA);
+	}
 }
 
 impl App for State {
 	fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
-		render_terminal(&self.terminal, ui);
+		self.render_terminal(ui);
 	}
 
 	fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
@@ -211,59 +262,30 @@ impl Dimensions for Size {
 	}
 }
 
-pub(crate) fn render_terminal(
-	term: &Arc<FairMutex<Term<EventProxy>>>,
-	ui: &mut egui::Ui,
-) {
-	let font_id = egui::FontId::monospace(13.0);
-
-	let painter = ui.painter();
-	let origin = ui.min_rect().min;
-
-	let term = term.lock_unfair();
-	let content = term.renderable_content();
-	let alac_colors = content.colors;
-
-	for cell in content.display_iter {
-		let x = cell.point.column.0 as f32 * CELL_WIDTH as f32;
-		let y = (cell.point.line.0 + content.display_offset as i32) as f32 * CELL_HEIGHT as f32;
-		let pos = origin + egui::vec2(x, y);
-		let rect = egui::Rect::from_min_size(pos, egui::vec2(CELL_WIDTH as f32, CELL_HEIGHT as f32));
-
-		let bg = alacritty_to_egui_color(cell.bg, &alac_colors);
-		let fg = alacritty_to_egui_color(cell.fg, &alac_colors);
-
-		painter.rect_filled(rect, 0.0, bg);
-		if cell.c != ' ' {
-			painter.text(pos, egui::Align2::LEFT_TOP, cell.c, font_id.clone(), fg);
-		}
-	}
-}
-
 fn set_default_colors(term: &Arc<FairMutex<Term<EventProxy>>>) {
 	use ansi::{Handler, NamedColor::*, Rgb};
 
 	let mut term = term.lock();
 	
 	for &(index, rgb) in &[
-		(Black         as usize, Rgb { r:   0, g:   0, b:   0 }),
-		(Red           as usize, Rgb { r: 205, g:   0, b:   0 }),
-		(Green         as usize, Rgb { r:   0, g: 205, b:   0 }),
+		(Black         as usize, Rgb { r:  17, g:  24, b:  30 }),
+		(Red           as usize, Rgb { r: 140, g:   0, b:   0 }),
+		(Green         as usize, Rgb { r:   0, g: 160, b:  30 }),
 		(Yellow        as usize, Rgb { r: 205, g: 205, b:   0 }),
-		(Blue          as usize, Rgb { r:   0, g:   0, b: 238 }),
+		(Blue          as usize, Rgb { r:  70, g:  90, b: 255 }),
 		(Magenta       as usize, Rgb { r: 205, g:   0, b: 205 }),
 		(Cyan          as usize, Rgb { r:   0, g: 205, b: 205 }),
 		(White         as usize, Rgb { r: 229, g: 229, b: 229 }),
-		(BrightBlack   as usize, Rgb { r: 127, g: 127, b: 127 }),
-		(BrightRed     as usize, Rgb { r: 255, g:   0, b:   0 }),
-		(BrightGreen   as usize, Rgb { r:   0, g: 255, b:   0 }),
+		(BrightBlack   as usize, Rgb { r:  80, g:  90, b: 100 }),
+		(BrightRed     as usize, Rgb { r: 255, g:  30, b:  50 }),
+		(BrightGreen   as usize, Rgb { r:  80, g: 255, b:  40 }),
 		(BrightYellow  as usize, Rgb { r: 255, g: 255, b:   0 }),
-		(BrightBlue    as usize, Rgb { r:  92, g:  92, b: 255 }),
-		(BrightMagenta as usize, Rgb { r: 255, g:   0, b: 255 }),
+		(BrightBlue    as usize, Rgb { r: 140, g: 140, b: 255 }),
+		(BrightMagenta as usize, Rgb { r: 255, g:  50, b: 240 }),
 		(BrightCyan    as usize, Rgb { r:   0, g: 255, b: 255 }),
 		(BrightWhite   as usize, Rgb { r: 255, g: 255, b: 255 }),
 		(Foreground    as usize, Rgb { r: 229, g: 229, b: 229 }),
-		(Background    as usize, Rgb { r:  50, g:  50, b:  50 }),
+		(Background    as usize, Rgb { r:  17, g:  24, b:  30 }),
 		(Cursor        as usize, Rgb { r: 229, g: 229, b: 229 }),
 	] {
 		term.set_color(index, rgb);
